@@ -21,15 +21,19 @@ type RedisQueueClient struct {
 	timeout       time.Duration
 	queueKey      string
 	batchSize     int
+	httpClient    *Client
 }
 
 func NewRedisQueueClient(baseURL, redisQueueAddr, managementKey string, timeout time.Duration, queueKey string, batchSize int) *RedisQueueClient {
+	trimmedBaseURL := strings.TrimSpace(baseURL)
+	trimmedQueueAddr := strings.TrimSpace(redisQueueAddr)
 	return &RedisQueueClient{
-		address:       redisQueueAddress(baseURL, redisQueueAddr),
+		address:       redisQueueAddress(trimmedBaseURL, trimmedQueueAddr),
 		managementKey: strings.TrimSpace(managementKey),
 		timeout:       timeout,
 		queueKey:      strings.TrimSpace(queueKey),
 		batchSize:     batchSize,
+		httpClient:    NewClient(trimmedBaseURL, managementKey, timeout),
 	}
 }
 
@@ -44,6 +48,22 @@ func (c *RedisQueueClient) PopUsage(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("redis queue batch size must be positive")
 	}
 
+	messages, err := c.popUsageOverRedis(ctx)
+	if err == nil {
+		return messages, nil
+	}
+	if !c.canFallbackToHTTP() {
+		return nil, err
+	}
+
+	messages, fallbackErr := c.popUsageOverHTTP(ctx)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("redis queue pop failed: %w; http usage queue fallback failed: %w", err, fallbackErr)
+	}
+	return messages, nil
+}
+
+func (c *RedisQueueClient) popUsageOverRedis(ctx context.Context) ([]string, error) {
 	conn, reader, err := c.openAuthenticatedConnection(ctx)
 	if err != nil {
 		return nil, err
@@ -61,6 +81,29 @@ func (c *RedisQueueClient) PopUsage(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("redis queue pop failed: %s", popResponse.err)
 	}
 	return popResponse.strings(), nil
+}
+
+func (c *RedisQueueClient) canFallbackToHTTP() bool {
+	return c != nil && c.httpClient != nil && strings.TrimSpace(c.httpClient.baseURL) != ""
+}
+
+func (c *RedisQueueClient) popUsageOverHTTP(ctx context.Context) ([]string, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("redis queue http client is nil")
+	}
+	result, err := c.httpClient.FetchUsageQueue(ctx, c.batchSize)
+	if err != nil {
+		return nil, fmt.Errorf("fetch usage queue over http: %w", err)
+	}
+	messages := make([]string, 0, len(result.Payload))
+	for _, item := range result.Payload {
+		trimmed := strings.TrimSpace(string(item))
+		if trimmed == "" || trimmed == "null" {
+			continue
+		}
+		messages = append(messages, trimmed)
+	}
+	return messages, nil
 }
 
 func (c *RedisQueueClient) openAuthenticatedConnection(ctx context.Context) (net.Conn, *bufio.Reader, error) {

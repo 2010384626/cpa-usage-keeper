@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,62 @@ func TestRedisQueueClientPopsBatch(t *testing.T) {
 	}
 
 	if len(messages) != 2 || messages[0] != `{"a":1}` || messages[1] != `{"b":2}` {
+		t.Fatalf("unexpected messages: %#v", messages)
+	}
+}
+
+func TestRedisQueueClientFallsBackToHTTPUsageQueueWhenRedisFails(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != cpaManagementUsageQueueEndpoint {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("count"); got != "2" {
+			t.Fatalf("expected count=2, got %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			t.Fatalf("expected management Authorization header, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"a":1},{"b":2}]`))
+	}))
+	defer server.Close()
+
+	client := NewRedisQueueClient(server.URL, "127.0.0.1:1", "secret", 10*time.Millisecond, ManagementUsageQueueKey, 2)
+	client.httpClient.httpClient = server.Client()
+	messages, err := client.PopUsage(ctxWithTimeout(t))
+	if err != nil {
+		t.Fatalf("PopUsage returned error: %v", err)
+	}
+	if len(messages) != 2 || messages[0] != `{"a":1}` || messages[1] != `{"b":2}` {
+		t.Fatalf("unexpected messages: %#v", messages)
+	}
+}
+
+func TestRedisQueueClientPrefersRedisBeforeHTTPFallback(t *testing.T) {
+	redisServer := newRedisQueueTestServer(t, func(t *testing.T, conn net.Conn) {
+		reader := bufio.NewReader(conn)
+		readRESPCommand(t, reader)
+		fmt.Fprint(conn, "+OK\r\n")
+		readRESPCommand(t, reader)
+		fmt.Fprint(conn, "*1\r\n$7\r\n{\"r\":1}\r\n")
+	})
+	httpCalled := false
+	httpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		_, _ = w.Write([]byte(`[{"h":1}]`))
+	}))
+	defer httpServer.Close()
+
+	client := NewRedisQueueClient(httpServer.URL, redisServer.URL, "secret", time.Second, ManagementUsageQueueKey, 2)
+	client.httpClient.httpClient = httpServer.Client()
+	messages, err := client.PopUsage(ctxWithTimeout(t))
+	if err != nil {
+		t.Fatalf("PopUsage returned error: %v", err)
+	}
+	if httpCalled {
+		t.Fatal("expected redis success to skip http fallback")
+	}
+	if len(messages) != 1 || messages[0] != `{"r":1}` {
 		t.Fatalf("unexpected messages: %#v", messages)
 	}
 }
