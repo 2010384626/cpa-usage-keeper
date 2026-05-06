@@ -209,6 +209,17 @@
   justify-content: center;
 }
 
+.transferButton {
+  gap: 8px;
+  min-height: 42px;
+  min-width: 96px;
+  justify-content: center;
+}
+
+.hiddenFileInput {
+  display: none;
+}
+
 .contentColumn {
   width: 100%;
 }
@@ -516,6 +527,15 @@
   border: 1px solid var(--error-color);
   border-radius: $radius-sm;
   color: var(--error-color);
+  font-size: 12px;
+}
+
+.successBox {
+  padding: 10px;
+  background-color: rgba($success-color, 0.1);
+  border: 1px solid var(--success-color);
+  border-radius: $radius-sm;
+  color: var(--success-color);
   font-size: 12px;
 }
 

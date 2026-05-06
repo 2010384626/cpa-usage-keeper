@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n, { persistLanguage } from '@/i18n';
 import {
@@ -14,12 +14,12 @@ import {
   Legend,
   Filler
 } from 'chart.js';
-import { ApiError, fetchStatus, fetchUsageAnalysis, fetchUsageEventFilterOptions, fetchUsageEvents, fetchUsageIdentities } from '@/lib/api';
+import { ApiError, exportUsage, fetchStatus, fetchUsageAnalysis, fetchUsageEventFilterOptions, fetchUsageEvents, fetchUsageIdentities, importUsage } from '@/lib/api';
 import type { StatusResponse, UsageAnalysisResponse, UsageEvent, UsageIdentity, UsageSourceFilterOption } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { Select } from '@/components/ui/Select';
-import { IconRefreshCw } from '@/components/ui/icons';
+import { IconDownload, IconRefreshCw, IconUpload } from '@/components/ui/icons';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useThemeStore } from '@/stores';
@@ -48,6 +48,7 @@ import {
   type UsageFilterWindow,
   type UsageTimeRange
 } from '@/utils/usage';
+import { downloadBlob } from '@/utils/download';
 import type { Theme } from '@/types';
 import styles from './UsagePage.module.scss';
 
@@ -407,6 +408,10 @@ const loadUsageTab = (): UsageTab => {
   }
 };
 
+const buildUsageExportFilename = (): string => (
+  `cpa-usage-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+);
+
 export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const { t } = useTranslation();
   const currentLanguage = i18n.language === 'zh' ? 'zh' : 'en';
@@ -464,6 +469,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const eventsRequestControllerRef = useRef<AbortController | null>(null);
   const eventsFilterOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const [manualRefreshLoading, setManualRefreshLoading] = useState(false);
+  const [usageExportLoading, setUsageExportLoading] = useState(false);
+  const [usageImportLoading, setUsageImportLoading] = useState(false);
+  const [usageTransferNotice, setUsageTransferNotice] = useState('');
+  const [usageTransferError, setUsageTransferError] = useState('');
+  const usageImportInputRef = useRef<HTMLInputElement | null>(null);
   const [credentialsLoading, setCredentialsLoading] = useState(false);
   const [credentialsError, setCredentialsError] = useState('');
   const [credentialsData, setCredentialsData] = useState<UsageIdentity[]>([]);
@@ -876,6 +886,68 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }
   }, [onAuthRequired, refreshActiveTab, t]);
 
+  const handleUsageExport = useCallback(async () => {
+    setUsageExportLoading(true);
+    setUsageTransferNotice('');
+    setUsageTransferError('');
+    try {
+      const blob = await exportUsage();
+      downloadBlob({ filename: buildUsageExportFilename(), blob });
+      setUsageTransferNotice(t('usage_stats.export_success'));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      setUsageTransferError(error instanceof Error ? error.message : t('notification.download_failed'));
+    } finally {
+      setUsageExportLoading(false);
+    }
+  }, [onAuthRequired, t]);
+
+  const handleUsageImportClick = useCallback(() => {
+    if (usageImportLoading) return;
+    usageImportInputRef.current?.click();
+  }, [usageImportLoading]);
+
+  const handleUsageImportFileChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setUsageImportLoading(true);
+    setUsageTransferNotice('');
+    setUsageTransferError('');
+    try {
+      const result = await importUsage(file);
+      setUsageTransferNotice(t('usage_stats.import_success', {
+        added: result.inserted_events,
+        skipped: result.skipped_events,
+        total: result.total_events,
+        failed: result.failed_events,
+      }));
+      try {
+        await refreshActiveTab();
+      } catch (refreshError) {
+        if (refreshError instanceof ApiError && refreshError.status === 401) {
+          onAuthRequired?.();
+          return;
+        }
+        setUsageTransferError(refreshError instanceof Error ? refreshError.message : t('notification.refresh_failed'));
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      setUsageTransferError(error instanceof ApiError && error.status === 400
+        ? t('usage_stats.import_invalid')
+        : error instanceof Error ? error.message : t('notification.upload_failed'));
+    } finally {
+      setUsageImportLoading(false);
+    }
+  }, [onAuthRequired, refreshActiveTab, t]);
+
   useEffect(() => scheduleOverviewAutoRefresh({
     enabled: isOverviewTab,
     refreshOverview: loadUsage,
@@ -1209,6 +1281,35 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 {showRangeControls && isCustomRange && customRangeError && (
                   <span className={styles.customRangeError}>{customRangeError}</span>
                 )}
+                <input
+                  ref={usageImportInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className={styles.hiddenFileInput}
+                  onChange={(event) => void handleUsageImportFileChange(event)}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void handleUsageExport()}
+                  loading={usageExportLoading}
+                  disabled={usageExportLoading || usageImportLoading}
+                  className={styles.transferButton}
+                >
+                  <IconDownload size={14} />
+                  <span>{usageExportLoading ? t('common.loading') : t('usage_stats.export')}</span>
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleUsageImportClick}
+                  loading={usageImportLoading}
+                  disabled={usageExportLoading || usageImportLoading}
+                  className={styles.transferButton}
+                >
+                  <IconUpload size={14} />
+                  <span>{usageImportLoading ? t('common.loading') : t('usage_stats.import')}</span>
+                </Button>
                 <Button
                   variant="secondary"
                   size="sm"
@@ -1226,6 +1327,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             {activeTab === 'overview' && error && <div className={styles.errorBox}>{error === 'AUTH_REQUIRED' ? t('auth.session_expired') : error}</div>}
             {activeTab === 'pricing' && pricingError && <div className={styles.errorBox}>{pricingError === 'AUTH_REQUIRED' ? t('auth.session_expired') : pricingError}</div>}
             {!(activeTab === 'overview' ? error : activeTab === 'pricing' ? pricingError : '') && statusError && <div className={styles.errorBox}>{statusError}</div>}
+            {usageTransferNotice && <div className={styles.successBox}>{usageTransferNotice}</div>}
+            {usageTransferError && <div className={styles.errorBox}>{usageTransferError}</div>}
 
             {activeTab === 'overview' && (
               <>

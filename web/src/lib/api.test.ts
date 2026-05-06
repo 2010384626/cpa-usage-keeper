@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchUsageEventFilterOptions, fetchUsageEvents, fetchUsageIdentities, triggerSync } from './api';
+import { exportUsage, fetchUsageEventFilterOptions, fetchUsageEvents, fetchUsageIdentities, importUsage, triggerSync } from './api';
 
 describe('fetchUsageEvents', () => {
   afterEach(() => {
@@ -127,5 +127,45 @@ describe('fetchUsageEvents', () => {
     expect(response.last_status).toBe('completed');
     expect(parsed.pathname).toBe('/api/v1/sync');
     expect(init).toMatchObject({ credentials: 'include', method: 'POST', signal });
+  });
+
+  it('downloads usage export as a blob', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const blob = new Blob(['{}'], { type: 'application/json' });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      blob: async () => blob,
+    } as Response);
+    const signal = new AbortController().signal;
+
+    const response = await exportUsage(signal);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url), 'http://localhost');
+
+    expect(response).toBe(blob);
+    expect(parsed.pathname).toBe('/api/v1/usage/export');
+    expect(init).toMatchObject({ credentials: 'include', signal, cache: 'no-store' });
+  });
+
+  it('uploads usage import as form data', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ total_events: 2, inserted_events: 1, skipped_events: 1, failed_events: 0 }),
+    } as Response);
+    const file = new File(['{}'], 'usage.json', { type: 'application/json' });
+
+    const response = await importUsage(file);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url), 'http://localhost');
+    const body = init?.body as FormData;
+
+    expect(response.inserted_events).toBe(1);
+    expect(parsed.pathname).toBe('/api/v1/usage/import');
+    expect(init).toMatchObject({ credentials: 'include', method: 'POST' });
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('file')).toBe(file);
   });
 });

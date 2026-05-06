@@ -161,6 +161,13 @@ export interface UsageEventFilterOptionsResponse {
   sources: UsageSourceFilterOption[]
 }
 
+export interface UsageImportResponse {
+  total_events: number
+  inserted_events: number
+  skipped_events: number
+  failed_events: number
+}
+
 export type UsageIdentityAuthType = 1 | 2
 
 export interface UsageIdentity {

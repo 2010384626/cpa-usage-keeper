@@ -1,4 +1,4 @@
-import type { AuthSessionResponse, PricingEntry, PricingResponse, StatusResponse, UsageAnalysisResponse, UsageEventFilterOptionsResponse, UsedModelsResponse, UsageIdentitiesResponse, UsageEventsResponse, UsageOverviewResponse } from './types'
+import type { AuthSessionResponse, PricingEntry, PricingResponse, StatusResponse, UsageAnalysisResponse, UsageEventFilterOptionsResponse, UsageImportResponse, UsedModelsResponse, UsageIdentitiesResponse, UsageEventsResponse, UsageOverviewResponse } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -160,6 +160,27 @@ export async function fetchUsageAnalysis(range: string, start?: string, end?: st
   const response = await apiFetch(`${apiPath('/usage/analysis')}${query ? `?${query}` : ''}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load usage analysis: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function exportUsage(signal?: AbortSignal): Promise<Blob> {
+  const response = await apiFetch(apiPath('/usage/export'), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to export usage: ${response.status}`)
+  }
+  return response.blob()
+}
+
+export async function importUsage(file: File): Promise<UsageImportResponse> {
+  const formData = new FormData()
+  formData.set('file', file)
+  const response = await apiFetch(apiPath('/usage/import'), {
+    method: 'POST',
+    body: formData,
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to import usage: ${response.status}`)
   }
   return response.json()
 }
